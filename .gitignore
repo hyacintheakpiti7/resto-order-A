@@ -1,0 +1,73 @@
+# ====================
+# DEPENDANCES
+# ====================
+node_modules/
+.pnpm-store/
+.yarn/
+
+# ====================
+# FICHIERS DE BUILD
+# ====================
+.next/
+out/
+dist/
+build/
+.vercel/
+.netlify/
+
+# ====================
+# VARIABLES D'ENVIRONNEMENT (TRÈS IMPORTANT)
+# ====================
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+.env*.local
+
+# ====================
+# FICHIERS DE LOGS
+# ====================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ====================
+# FICHIERS SYSTEME
+# ====================
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+*.swp
+*.swo
+
+# ====================
+# EDITEURS / IDE
+# ====================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ====================
+# CACHE
+# ====================
+.cache/
+*.tsbuildinfo
+.eslintcache
+.next/cache/
+
+# ====================
+# AUTRES
+# ====================
+*.pem
+*.p12
+*.pfx
+*.key
+*.crt
+.terraform/
+coverage/
+.nyc_output/
