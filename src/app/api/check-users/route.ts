@@ -24,11 +24,22 @@ export async function GET() {
       database: 'Neon PostgreSQL'
     });
   } catch (error) {
-    console.error('Erreur API check-users:', error);
-    return NextResponse.json({ 
-      success: false, 
-      error: error.message,
-      details: error.cause?.message || 'Aucun détail supplémentaire'
-    }, { status: 500 });
-  }
+  const message = error instanceof Error 
+    ? error.message 
+    : 'Erreur inconnue';
+
+  const details =
+    error instanceof Error && error.cause instanceof Error
+      ? error.cause.message
+      : 'Aucun détail supplémentaire';
+
+  return NextResponse.json(
+    {
+      success: false,
+      error: message,
+      details
+    },
+    { status: 500 }
+  );
+}
 }
