@@ -23,12 +23,12 @@ async function runSeed() {
     .insert(settings)
     .values({
       id: 1,
-      restaurantName: "Restaurant Le Gourmet",
+      restaurantName: "SUYA Food",
       currency: "FCFA",
       taxRate: "18.00",
       serviceRate: "0.00",
-      address: "12 Avenue de la Gastronomie",
-      phone: "+225 07 00 00 00",
+      address: "12 Avenue Gédéon",
+      phone: "+229 01 69 09 57 51",
       openingHours: "08:00 - 23:00",
       receiptFooter: "Merci de votre visite — à très bientôt !",
       cashierCanEditOrders: true,
@@ -37,13 +37,13 @@ async function runSeed() {
 
   const pwd = hashPassword("passer123");
   await db.insert(users).values([
-    { code: "ADM-01", fullName: "Awa Diallo", role: "admin", passwordHash: pwd, phone: "+225 07 11 11 11" },
-    { code: "SRV-01", fullName: "Koffi N'Guessan", role: "serveur", passwordHash: pwd, phone: "+225 07 22 22 22" },
-    { code: "SRV-02", fullName: "Mariam Touré", role: "serveur", passwordHash: pwd },
-    { code: "CAI-01", fullName: "Yao Kouadio", role: "caissier", passwordHash: pwd },
-    { code: "CHF-01", fullName: "Ibrahim Bakayoko", role: "chef", passwordHash: pwd },
-    { code: "CUI-01", fullName: "Fatou Camara", role: "cuisinier", passwordHash: pwd },
-    { code: "CUI-02", fullName: "Serge Aka", role: "cuisinier", passwordHash: pwd },
+    { code: "ADM-01", fullName: "Hyacinthe AKPITI", role: "admin", passwordHash: pwd, phone: "+229 01 69 09 57 51" },
+    { code: "SRV-01", fullName: "Koffi GEDEON", role: "serveur", passwordHash: pwd, phone: "+229 01 69 09 57 51" },
+    { code: "SRV-02", fullName: "Mariam GEDEON", role: "serveur", passwordHash: pwd },
+    { code: "CAI-01", fullName: "Oronce OKEBIYI", role: "caissier", passwordHash: pwd },
+    { code: "CHF-01", fullName: "Shakira JAFFAL", role: "chef", passwordHash: pwd },
+    { code: "CUI-01", fullName: "Roukayath MAMADOU", role: "cuisinier", passwordHash: pwd },
+    { code: "CUI-02", fullName: "Serge ORONCE", role: "cuisinier", passwordHash: pwd },
   ]);
 
   const cats = await db

@@ -11,7 +11,7 @@ import { clock } from "@/lib/format";
 type NavItem = { href: string; label: string; icon: string; roles: Role[] };
 
 const NAV: NavItem[] = [
-  { href: "/admin", label: "Tableau de bord", icon: "📊", roles: ["admin"] },
+  { href: "/admin", label: "Tableau de bord", icon: "📊", roles: ["admin", "caissier", "chef"] },
   { href: "/serveur", label: "Mes commandes", icon: "🧾", roles: ["serveur"] },
   { href: "/serveur/nouvelle", label: "Nouvelle commande", icon: "➕", roles: ["serveur"] },
   { href: "/caisse", label: "Caisse", icon: "💳", roles: ["caissier", "admin"] },
@@ -49,6 +49,7 @@ export default function AppShell({
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [panel, setPanel] = useState(false);
+  const [profileMenu, setProfileMenu] = useState(false);
   const { data, refresh } = useLive<{ notifications: NotifRow[]; unread: number }>(
     "/api/notifications",
     5000,
@@ -58,6 +59,7 @@ export default function AppShell({
   useEffect(() => {
     setOpen(false);
     setPanel(false);
+    setProfileMenu(false);
   }, [pathname]);
 
   const items = NAV.filter((item) => item.roles.includes(user.role));
@@ -196,6 +198,36 @@ export default function AppShell({
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+          </div>
+          <div className="relative">
+            <button
+              onClick={() => setProfileMenu((v) => !v)}
+              className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white py-1.5 pl-1.5 pr-2.5 shadow-sm transition hover:bg-slate-50"
+              aria-label="Menu utilisateur"
+              aria-expanded={profileMenu}
+            >
+              <span className="grid h-8 w-8 place-items-center rounded-lg bg-slate-900 text-[10px] font-bold text-amber-300">
+                {user.fullName.split(" ").filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase()}
+              </span>
+              <span className="hidden max-w-28 truncate text-xs font-semibold text-slate-700 sm:block">{user.fullName}</span>
+              <span className="hidden text-slate-400 sm:block">⌄</span>
+            </button>
+            {profileMenu && (
+              <div className="absolute right-0 top-12 z-40 w-56 overflow-hidden rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
+                <div className="border-b border-slate-100 px-3 py-2.5">
+                  <p className="truncate text-sm font-semibold text-slate-800">{user.fullName}</p>
+                  <p className="text-xs text-slate-500">{ROLE_LABELS[user.role]} · {user.code}</p>
+                </div>
+                {user.role === "admin" && (
+                  <Link href="/admin/parametres" className="mt-1 block rounded-xl px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50">
+                    ⚙️ Paramètres
+                  </Link>
+                )}
+                <button onClick={logout} className="w-full rounded-xl px-3 py-2 text-left text-sm font-semibold text-rose-600 transition hover:bg-rose-50">
+                  Se déconnecter
+                </button>
               </div>
             )}
           </div>

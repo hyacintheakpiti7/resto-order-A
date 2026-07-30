@@ -158,7 +158,7 @@ export default async function PrintPage({
         {config.receiptFooter}
       </p>
       <p className="text-center text-[10px] text-slate-500">
-        Document généré par RestoFlow — {dateTime(new Date())}
+        Document généré par SUYA Food — {dateTime(new Date())}
       </p>
     </div>
   );

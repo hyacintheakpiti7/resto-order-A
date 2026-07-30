@@ -305,6 +305,43 @@ export async function POST(request: Request, ctx: Ctx) {
       return ok({ success: true, serviceSeconds });
     }
 
+    /* ---------------- Kanban : transition rapide encadrée ---------------- */
+    if (action === "move-status") {
+      const target = String(body.status ?? "");
+      if (target === "en_preparation") {
+        if (!["chef", "admin", "cuisinier"].includes(user.role)) return fail("Accès non autorisé", 403);
+        if (!["validee", "assignee", "en_preparation"].includes(order.status)) {
+          return fail("Cette commande doit d’abord être encaissée à la caisse");
+        }
+        if (user.role === "cuisinier" && order.cookId !== user.id) return fail("Cette commande ne vous est pas attribuée", 403);
+        if (order.status !== "en_preparation") {
+          await db.update(orders).set({ status: "en_preparation", startedAt: order.startedAt ?? now }).where(eq(orders.id, orderId));
+          await logAction(user, "kanban_preparation", "order", orderId, order.reference);
+        }
+        return ok({ success: true });
+      }
+      if (target === "prete") {
+        if (!["chef", "admin", "cuisinier"].includes(user.role)) return fail("Accès non autorisé", 403);
+        if (!["validee", "assignee", "en_preparation"].includes(order.status)) return fail("Transition impossible");
+        if (user.role === "cuisinier" && order.cookId !== user.id) return fail("Cette commande ne vous est pas attribuée", 403);
+        const startedAt = order.startedAt ?? order.assignedAt ?? order.createdAt;
+        const prepSeconds = Math.round((now.getTime() - startedAt.getTime()) / 1000);
+        await db.update(orders).set({ status: "prete", startedAt: order.startedAt ?? now, readyAt: now, prepSeconds }).where(eq(orders.id, orderId));
+        await notify({ targetUserId: order.serverId, orderId, orderReference: order.reference, type: "commande_prete", title: `Commande ${order.reference} prête`, message: `Table ${order.tableNumber} est prête à servir.` });
+        await logAction(user, "kanban_prete", "order", orderId, order.reference);
+        return ok({ success: true });
+      }
+      if (target === "livree") {
+        if (!["serveur", "admin"].includes(user.role)) return fail("Accès non autorisé", 403);
+        if (order.status !== "prete") return fail("La commande doit être prête avant d’être servie");
+        const serviceSeconds = Math.round((now.getTime() - order.createdAt.getTime()) / 1000);
+        await db.update(orders).set({ status: "livree", deliveredAt: now, serviceSeconds }).where(eq(orders.id, orderId));
+        await logAction(user, "kanban_livraison", "order", orderId, order.reference);
+        return ok({ success: true });
+      }
+      return fail("Colonne de destination invalide");
+    }
+
     /* ---------------- Annulation ---------------- */
     if (action === "cancel") {
       if (!["caissier", "admin"].includes(user.role)) return fail("Accès non autorisé", 403);

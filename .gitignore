@@ -71,3 +71,5 @@ desktop.ini
 .terraform/
 coverage/
 .nyc_output/
+.vercel
+.env*
