@@ -8,7 +8,7 @@ import { ROLE_LABELS, type Role } from "@/lib/constants";
 import { apiSend } from "@/lib/client";
 import { useNotifications, type NotificationRow } from "@/hooks/useNotifications";
 import { clock } from "@/lib/format";
-import { OfflineBanner } from "@/components/ui";
+import { Button, Modal, OfflineBanner } from "@/components/ui";
 
 type NavItem = { href: string; label: string; icon: string; roles: Role[] };
 
@@ -42,6 +42,7 @@ export default function AppShell({
   const [open, setOpen] = useState(false);
   const [panel, setPanel] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
+  const [logoutConfirm, setLogoutConfirm] = useState(false);
   const { data, refresh } = useNotifications();
   const unread = data?.unread ?? 0;
   const knownNotificationIds = useRef<Set<number> | null>(null);
@@ -107,10 +108,15 @@ export default function AppShell({
   const items = NAV.filter((item) => item.roles.includes(user.role));
 
   async function logout() {
-    if (!window.confirm("Voulez-vous vraiment vous déconnecter ?")) return;
+    setLogoutConfirm(false);
     await apiSend("/api/auth/logout", {});
     router.push("/login");
     router.refresh();
+  }
+
+  function requestLogout() {
+    setProfileMenu(false);
+    setLogoutConfirm(true);
   }
 
   async function markAll() {
@@ -159,7 +165,7 @@ export default function AppShell({
             {ROLE_LABELS[user.role]} • {user.code}
           </p>
           <button
-            onClick={logout}
+            onClick={requestLogout}
             className="mt-3 w-full rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-rose-600 hover:text-white"
           >
             Se déconnecter
@@ -269,7 +275,7 @@ export default function AppShell({
                     ⚙️ Paramètres
                   </Link>
                 )}
-                <button onClick={logout} className="w-full rounded-xl px-3 py-2 text-left text-sm font-semibold text-rose-600 transition hover:bg-rose-50">
+                <button onClick={requestLogout} className="w-full rounded-xl px-3 py-2 text-left text-sm font-semibold text-rose-600 transition hover:bg-rose-50">
                   Se déconnecter
                 </button>
               </div>
@@ -278,6 +284,15 @@ export default function AppShell({
         </header>
         <main className="min-w-0 flex-1 p-4 sm:p-6">{children}</main>
       </div>
+      <Modal open={logoutConfirm} onClose={() => setLogoutConfirm(false)} title="Se déconnecter ?">
+        <div className="space-y-4">
+          <p className="text-sm leading-6 text-slate-600">Vous allez fermer votre session SUYA Food sur ce poste. Vous pourrez vous reconnecter à tout moment.</p>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setLogoutConfirm(false)}>Annuler</Button>
+            <Button variant="danger" onClick={logout}>Se déconnecter</Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
