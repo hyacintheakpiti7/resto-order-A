@@ -183,6 +183,22 @@ export async function POST(request: Request, ctx: Ctx) {
         message: `Table ${order.tableNumber} • validée par ${user.fullName} • ${PAYMENT_LABELS[method]}.`,
       });
       await notify({
+        targetRole: "caissier",
+        orderId,
+        orderReference: order.reference,
+        type: "commande_prete",
+        title: `Commande ${order.reference} prête`,
+        message: `Table ${order.tableNumber} est prête à être servie.`,
+      });
+      await notify({
+        targetRole: "serveur",
+        orderId,
+        orderReference: order.reference,
+        type: "commande_prete",
+        title: `Commande ${order.reference} prête`,
+        message: `Table ${order.tableNumber} est prête à être servie.`,
+      });
+      await notify({
         targetUserId: order.serverId,
         orderId,
         orderReference: order.reference,
@@ -328,6 +344,8 @@ export async function POST(request: Request, ctx: Ctx) {
         const prepSeconds = Math.round((now.getTime() - startedAt.getTime()) / 1000);
         await db.update(orders).set({ status: "prete", startedAt: order.startedAt ?? now, readyAt: now, prepSeconds }).where(eq(orders.id, orderId));
         await notify({ targetUserId: order.serverId, orderId, orderReference: order.reference, type: "commande_prete", title: `Commande ${order.reference} prête`, message: `Table ${order.tableNumber} est prête à servir.` });
+        await notify({ targetRole: "caissier", orderId, orderReference: order.reference, type: "commande_prete", title: `Commande ${order.reference} prête`, message: `Table ${order.tableNumber} est prête à être servie.` });
+        await notify({ targetRole: "serveur", orderId, orderReference: order.reference, type: "commande_prete", title: `Commande ${order.reference} prête`, message: `Table ${order.tableNumber} est prête à être servie.` });
         await logAction(user, "kanban_prete", "order", orderId, order.reference);
         return ok({ success: true });
       }

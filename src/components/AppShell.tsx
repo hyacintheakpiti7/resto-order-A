@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ROLE_LABELS, type Role } from "@/lib/constants";
-import { apiSend, useLive } from "@/lib/client";
+import { apiSend } from "@/lib/client";
+import { useNotifications, type NotificationRow } from "@/hooks/useNotifications";
 import { clock } from "@/lib/format";
+import { OfflineBanner } from "@/components/ui";
 
 type NavItem = { href: string; label: string; icon: string; roles: Role[] };
 
@@ -26,16 +28,6 @@ const NAV: NavItem[] = [
   { href: "/admin/journal", label: "Journal d'audit", icon: "🛡️", roles: ["admin"] },
 ];
 
-type NotifRow = {
-  id: number;
-  title: string;
-  message: string;
-  type: string;
-  orderReference: string | null;
-  readAt: string | null;
-  createdAt: string;
-};
-
 export default function AppShell({
   user,
   restaurantName,
@@ -50,11 +42,32 @@ export default function AppShell({
   const [open, setOpen] = useState(false);
   const [panel, setPanel] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
-  const { data, refresh } = useLive<{ notifications: NotifRow[]; unread: number }>(
-    "/api/notifications",
-    5000,
-  );
+  const { data, refresh } = useNotifications();
   const unread = data?.unread ?? 0;
+  const knownNotificationIds = useRef<Set<number> | null>(null);
+  const audioContext = useRef<AudioContext | null>(null);
+
+  function getAudioContext() {
+    if (!audioContext.current) audioContext.current = new AudioContext();
+    return audioContext.current;
+  }
+
+  function playNotificationSound() {
+    const context = getAudioContext();
+    const end = context.currentTime + 5;
+    for (let time = context.currentTime; time < end; time += 0.55) {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.frequency.value = time % 1.1 < 0.1 ? 990 : 740;
+      gain.gain.setValueAtTime(0.001, time);
+      gain.gain.exponentialRampToValueAtTime(0.07, time + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + 0.22);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(time);
+      oscillator.stop(time + 0.24);
+    }
+  }
 
   useEffect(() => {
     setOpen(false);
@@ -62,9 +75,39 @@ export default function AppShell({
     setProfileMenu(false);
   }, [pathname]);
 
+  useEffect(() => {
+    const unlockAudio = () => {
+      const context = getAudioContext();
+      void context.resume();
+    };
+    window.addEventListener("pointerdown", unlockAudio, { once: true });
+    return () => window.removeEventListener("pointerdown", unlockAudio);
+  }, []);
+
+  useEffect(() => {
+    const notifications = data?.notifications ?? [];
+    const ids = new Set(notifications.map((notification) => notification.id));
+    if (!knownNotificationIds.current) {
+      knownNotificationIds.current = ids;
+      return;
+    }
+    const freshUnread = notifications.some(
+      (notification) => !notification.readAt && !knownNotificationIds.current?.has(notification.id),
+    );
+    knownNotificationIds.current = ids;
+    if (freshUnread) {
+      try {
+        playNotificationSound();
+      } catch {
+        // L'audio reste soumis à la politique d'interaction du navigateur.
+      }
+    }
+  }, [data]);
+
   const items = NAV.filter((item) => item.roles.includes(user.role));
 
   async function logout() {
+    if (!window.confirm("Voulez-vous vraiment vous déconnecter ?")) return;
     await apiSend("/api/auth/logout", {});
     router.push("/login");
     router.refresh();
@@ -76,10 +119,11 @@ export default function AppShell({
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 lg:flex">
+    <div className="min-h-screen bg-slate-100 lg:pl-72">
+      <OfflineBanner />
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 w-72 transform bg-slate-900 text-slate-200 transition-transform lg:static lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 h-screen w-72 transform bg-slate-900 text-slate-200 transition-transform lg:fixed lg:translate-x-0 ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >

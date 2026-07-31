@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Empty, Toast, inputClass } from "@/components/ui";
-import { apiSend, useLive } from "@/lib/client";
+import { apiSend } from "@/lib/client";
+import { useOrders } from "@/hooks/useOrders";
 import type { OrderDTO } from "@/lib/orders";
 import { money } from "@/lib/format";
 import { ORDER_STATUSES, STATUS_SHORT, type OrderStatus } from "@/lib/constants";
@@ -11,126 +12,85 @@ import { ORDER_STATUSES, STATUS_SHORT, type OrderStatus } from "@/lib/constants"
 type ColumnId = "waiting" | "preparing" | "ready" | "served";
 type DateFilter = "today" | "yesterday" | "week" | "all" | "custom";
 
-const COLUMNS: { id: ColumnId; title: string; subtitle: string; statuses: OrderStatus[]; target?: OrderStatus; tone: string }[] = [
-  { id: "waiting", title: "En attente", subtitle: "Validation caisse", statuses: ["en_attente_validation"], tone: "border-amber-200 bg-amber-50/40" },
-  { id: "preparing", title: "Préparation", subtitle: "En cuisine", statuses: ["validee", "assignee", "en_preparation"], target: "en_preparation", tone: "border-sky-200 bg-sky-50/35" },
-  { id: "ready", title: "Prête", subtitle: "À servir", statuses: ["prete"], target: "prete", tone: "border-emerald-200 bg-emerald-50/35" },
-  { id: "served", title: "Servie", subtitle: "Terminée", statuses: ["livree"], target: "livree", tone: "border-slate-200 bg-slate-50" },
+const COLUMNS: { id: ColumnId; title: string; statuses: OrderStatus[]; target?: OrderStatus; tone: string }[] = [
+  { id: "waiting", title: "En attente", statuses: ["en_attente_validation"], tone: "border-amber-300 bg-amber-50/50" },
+  { id: "preparing", title: "Préparation", statuses: ["validee", "assignee", "en_preparation"], target: "en_preparation", tone: "border-sky-300 bg-sky-50/50" },
+  { id: "ready", title: "Prête", statuses: ["prete"], target: "prete", tone: "border-emerald-300 bg-emerald-50/50" },
+  { id: "served", title: "Servie", statuses: ["livree"], target: "livree", tone: "border-slate-300 bg-slate-50" },
 ];
 
+function itemIcon(name: string) {
+  const value = name.toLowerCase();
+  if (value.includes("suya") || value.includes("brochette")) return "🍢";
+  if (value.includes("frite")) return "🍟";
+  if (value.includes("coca") || value.includes("boisson") || value.includes("jus")) return "🥤";
+  if (value.includes("sauce")) return "🥣";
+  return "🍽️";
+}
 function minutesSince(order: OrderDTO, now: number) {
   if (order.status === "livree" && order.serviceSeconds !== null) return Math.max(0, Math.round(order.serviceSeconds / 60));
   return Math.max(0, Math.floor((now - new Date(order.createdAt).getTime()) / 60000));
 }
-
-function Timer({ order, now }: { order: OrderDTO; now: number }) {
-  const minutes = minutesSince(order, now);
-  const tone = minutes < 10 ? "bg-emerald-50 text-emerald-700" : minutes <= 20 ? "bg-amber-50 text-amber-700" : "bg-rose-50 text-rose-700";
-  return <span className={`rounded-lg px-2 py-1 text-[11px] font-bold tabular-nums ${tone}`}>⏱ {String(minutes).padStart(2, "0")} min</span>;
+function isLate(order: OrderDTO, now: number) { return !["livree", "annulee"].includes(order.status) && minutesSince(order, now) > 20; }
+function progress(order: OrderDTO) { return order.status === "en_attente_validation" ? 25 : ["validee", "assignee", "en_preparation"].includes(order.status) ? 65 : order.status === "prete" ? 90 : 100; }
+function paymentBadge(order: OrderDTO) {
+  if (order.paymentStatus === "paye") return "bg-emerald-50 text-emerald-700";
+  if (order.paidAmount > 0) return "bg-orange-50 text-orange-700";
+  return "bg-rose-50 text-rose-700";
 }
 
-function OrderCard({ order, now, moving, onCancel }: { order: OrderDTO; now: number; moving: boolean; onCancel: (order: OrderDTO) => void }) {
+function OrderCard({ order, now, moving, onCancel, onOpen }: { order: OrderDTO; now: number; moving: boolean; onCancel: (order: OrderDTO) => void; onOpen: (order: OrderDTO) => void }) {
+  const late = isLate(order, now); const mins = minutesSince(order, now); const pct = progress(order);
+  const border = order.status === "en_attente_validation" ? "border-l-amber-400" : ["validee", "assignee", "en_preparation"].includes(order.status) ? "border-l-sky-500" : order.status === "prete" ? "border-l-emerald-500" : order.status === "annulee" ? "border-l-rose-500" : "border-l-slate-400";
   const print = (type: "bon" | "recu") => window.open(`/impression/${order.id}?type=${type}`, "_blank", "noopener,noreferrer");
-  return (
-    <article draggable={!moving && !["livree", "annulee"].includes(order.status)} data-order-id={order.id} className={`group rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition duration-200 hover:border-amber-300 hover:shadow-md ${moving ? "pointer-events-none opacity-50" : "cursor-grab active:cursor-grabbing"}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0"><Link href={`/commandes/${order.id}`} className="font-mono text-sm font-bold text-slate-900 hover:text-amber-700 hover:underline">{order.reference}</Link><p className="mt-0.5 text-xs text-slate-500">🪑 Table {order.tableNumber} · {order.serverName ?? "Service"}</p></div>
-        <Timer order={order} now={now} />
-      </div>
-      <div className="mt-3 space-y-1 rounded-xl bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
-        {order.items.slice(0, 3).map((item) => <p key={item.id} className="truncate"><strong className="text-slate-800">{item.quantity} ×</strong> {item.dishName}</p>)}
-        {order.items.length > 3 && <p className="text-slate-400">+ {order.items.length - 3} autre(s) article(s)</p>}
-      </div>
-      <div className="mt-3 flex items-center justify-between gap-2"><span className="text-[11px] text-slate-400">{new Date(order.createdAt).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</span><strong className="text-sm text-slate-900">{money(order.total)}</strong></div>
-      <div className="mt-3 grid grid-cols-4 gap-1 border-t border-slate-100 pt-3 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100">
-        <Link href={`/commandes/${order.id}`} className="rounded-lg py-1.5 text-center text-[10px] font-bold text-slate-600 hover:bg-slate-100" title="Voir et modifier">👁 Voir</Link>
-        <button onClick={() => print("bon")} className="rounded-lg py-1.5 text-[10px] font-bold text-slate-600 hover:bg-slate-100" title="Imprimer le ticket cuisine">🖨 Ticket</button>
-        {order.status === "en_attente_validation" ? <Link href="/caisse" className="rounded-lg py-1.5 text-center text-[10px] font-bold text-amber-700 hover:bg-amber-50" title="Encaisser">💳 Caisse</Link> : <button onClick={() => print("recu")} className="rounded-lg py-1.5 text-[10px] font-bold text-slate-600 hover:bg-slate-100" title="Imprimer le reçu">🧾 Reçu</button>}
-        {! ["livree", "annulee"].includes(order.status) ? <button onClick={() => onCancel(order)} className="rounded-lg py-1.5 text-[10px] font-bold text-rose-600 hover:bg-rose-50" title="Annuler">✕</button> : <span />}
-      </div>
-    </article>
-  );
+  return <article draggable={!moving && !["livree", "annulee"].includes(order.status)} className={`group rounded-2xl border border-slate-200 border-l-4 ${border} bg-white p-4 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-md ${late ? "animate-[pulse_2.4s_ease-in-out_infinite] ring-1 ring-rose-300" : ""} ${moving ? "pointer-events-none opacity-50" : "cursor-grab active:cursor-grabbing"}`}>
+    <div className="flex items-start justify-between gap-2"><button onClick={() => onOpen(order)} className="min-w-0 text-left"><p className="font-mono text-sm font-bold text-slate-900 hover:text-amber-700">{order.reference}</p><p className="mt-0.5 text-xs text-slate-500">🪑 Table {order.tableNumber} · 👤 {order.serverName ?? "Service"}</p></button><span className={`shrink-0 rounded-lg px-2 py-1 text-[11px] font-bold tabular-nums ${mins < 10 ? "bg-emerald-50 text-emerald-700" : mins <= 20 ? "bg-amber-50 text-amber-700" : "bg-rose-50 text-rose-700"}`}>⏱ {String(mins).padStart(2, "0")} min</span></div>
+    {late && <div className="mt-2 inline-flex items-center gap-1 rounded-md bg-rose-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-rose-700">🔴 Prioritaire · délai dépassé</div>}
+    <div className="mt-3 space-y-1 rounded-xl bg-slate-50 px-3 py-2.5 text-xs text-slate-600">{order.items.slice(0, 3).map((item) => <p key={item.id} className="truncate"><span className="mr-1">{itemIcon(item.dishName)}</span> <strong className="text-slate-800">{item.dishName} ×{item.quantity}</strong></p>)}{order.items.length > 3 && <p className="text-slate-400">+ {order.items.length - 3} autre(s) article(s)</p>}</div>
+    <div className="mt-3"><div className="flex justify-between text-[10px] font-bold uppercase tracking-wide text-slate-400"><span>{order.status === "en_attente_validation" ? "En attente" : order.status === "prete" ? "Prête" : order.status === "livree" ? "Servie" : "Préparation"}</span><span>{pct}%</span></div><div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className={`h-full rounded-full transition-all duration-500 ${late ? "bg-rose-500" : order.status === "prete" ? "bg-emerald-500" : order.status === "en_attente_validation" ? "bg-amber-400" : "bg-sky-500"}`} style={{ width: `${pct}%` }} /></div></div>
+    <div className="mt-3 flex items-center justify-between"><span className={`rounded-md px-2 py-1 text-[10px] font-bold ${paymentBadge(order)}`}>{order.paymentStatus === "paye" ? "● Payée" : order.paidAmount > 0 ? "● Partiellement payée" : "● Non payée"}</span><strong className="text-sm text-slate-900">{money(order.total)}</strong></div>
+    <div className="mt-3 grid grid-cols-4 gap-1 border-t border-slate-100 pt-3 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"><button onClick={() => onOpen(order)} className="rounded-lg py-1.5 text-[10px] font-bold text-slate-600 hover:bg-slate-100">👁 Voir</button><button onClick={() => print("bon")} className="rounded-lg py-1.5 text-[10px] font-bold text-slate-600 hover:bg-slate-100">🖨 Ticket</button>{order.status === "en_attente_validation" ? <Link href="/caisse" className="rounded-lg py-1.5 text-center text-[10px] font-bold text-amber-700 hover:bg-amber-50">💳 Caisse</Link> : <button onClick={() => print("recu")} className="rounded-lg py-1.5 text-[10px] font-bold text-slate-600 hover:bg-slate-100">🧾 Reçu</button>}{!["livree", "annulee"].includes(order.status) ? <button onClick={() => onCancel(order)} className="rounded-lg py-1.5 text-[10px] font-bold text-rose-600 hover:bg-rose-50">✕</button> : <span />}</div>
+  </article>;
+}
+
+function Drawer({ order, now, onClose }: { order: OrderDTO | null; now: number; onClose: () => void }) {
+  if (!order) return null;
+  const print = (type: "bon" | "recu") => window.open(`/impression/${order.id}?type=${type}`, "_blank", "noopener,noreferrer");
+  const timeline = [["Créée", order.createdAt], ["Validée / envoyée cuisine", order.validatedAt], ["Attribuée", order.assignedAt], ["Préparation démarrée", order.startedAt], ["Prête", order.readyAt], ["Servie", order.deliveredAt]] as const;
+  return <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/35" onMouseDown={onClose}><aside onMouseDown={(event) => event.stopPropagation()} className="h-full w-full max-w-xl overflow-y-auto bg-white shadow-2xl animate-[slide-in_220ms_ease-out]">
+    <header className="sticky top-0 z-10 flex items-start justify-between border-b border-slate-100 bg-white/95 px-5 py-4 backdrop-blur"><div><p className="font-mono text-lg font-bold text-slate-900">{order.reference}</p><p className="text-sm text-slate-500">Table {order.tableNumber} · {order.guests} couvert(s)</p></div><button onClick={onClose} className="grid h-9 w-9 place-items-center rounded-xl text-slate-500 hover:bg-slate-100">✕</button></header>
+    <div className="space-y-6 p-5"><div className="grid grid-cols-2 gap-3 rounded-2xl bg-slate-50 p-4 text-sm"><p><span className="block text-xs text-slate-400">Serveur</span><strong>{order.serverName ?? "—"}</strong></p><p><span className="block text-xs text-slate-400">Paiement</span><strong>{order.paymentStatus === "paye" ? "Payée" : "Non payée"}</strong></p><p><span className="block text-xs text-slate-400">Temps écoulé</span><strong>{minutesSince(order, now)} min</strong></p><p><span className="block text-xs text-slate-400">Total</span><strong>{money(order.total)}</strong></p></div>
+      <section><h2 className="text-sm font-bold text-slate-900">Articles & suppléments</h2><div className="mt-3 space-y-2">{order.items.map((item) => <div key={item.id} className="rounded-xl border border-slate-100 px-3 py-3"><p className="font-medium text-slate-800">{itemIcon(item.dishName)} {item.dishName} ×{item.quantity}</p>{item.supplements.length > 0 && <p className="mt-1 text-xs text-amber-700">+ {item.supplements.map((supplement) => supplement.name).join(", ")}</p>}{item.notes && <p className="mt-1 text-xs italic text-slate-500">“{item.notes}”</p>}</div>)}</div>{order.notes && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800"><strong>Remarque :</strong> {order.notes}</p>}</section>
+      <section><h2 className="text-sm font-bold text-slate-900">Chronologie</h2><ol className="mt-3 space-y-3 border-l-2 border-slate-100 pl-4">{timeline.map(([label, value]) => <li key={label} className="relative"><span className={`absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full ${value ? "bg-emerald-500" : "bg-slate-200"}`} /><p className={`text-sm font-medium ${value ? "text-slate-800" : "text-slate-400"}`}>{label}</p><p className="text-xs text-slate-400">{value ? new Date(value).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "En attente"}</p></li>)}</ol></section>
+      <div className="grid grid-cols-2 gap-2"><button onClick={() => print("bon")} className="rounded-xl border border-slate-200 px-3 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50">🖨 Ticket cuisine</button><button onClick={() => print("recu")} className="rounded-xl border border-slate-200 px-3 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50">🧾 Reçu client</button>{order.status === "en_attente_validation" && <Link href="/caisse" className="col-span-2 rounded-xl bg-[#f4c430] px-3 py-3 text-center text-sm font-bold text-[#121212] hover:bg-[#d9a404]">💳 Encaisser la commande</Link>}</div>
+    </div></aside></div>;
 }
 
 export default function CommandesPage() {
-  const { data, refresh, loading } = useLive<{ orders: OrderDTO[] }>("/api/orders?limit=300", 5000);
-  const [search, setSearch] = useState("");
-  const [status, setStatus] = useState<"all" | OrderStatus>("all");
-  const [server, setServer] = useState("all");
-  const [table, setTable] = useState("");
-  const [payment, setPayment] = useState("all");
-  const [dateFilter, setDateFilter] = useState<DateFilter>("today");
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
-  const [mobileColumn, setMobileColumn] = useState<ColumnId>("waiting");
-  const [draggedId, setDraggedId] = useState<number | null>(null);
-  const [movingId, setMovingId] = useState<number | null>(null);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
-  const [now, setNow] = useState(() => Date.now());
-
+  const { data, refresh, loading } = useOrders("limit=300", 5000);
+  const [search, setSearch] = useState(""); const [status, setStatus] = useState<"all" | OrderStatus>("all"); const [server, setServer] = useState("all"); const [table, setTable] = useState(""); const [payment, setPayment] = useState("all"); const [dateFilter, setDateFilter] = useState<DateFilter>("today"); const [customFrom, setCustomFrom] = useState(""); const [customTo, setCustomTo] = useState(""); const [mobileColumn, setMobileColumn] = useState<ColumnId>("waiting"); const [draggedId, setDraggedId] = useState<number | null>(null); const [movingId, setMovingId] = useState<number | null>(null); const [selected, setSelected] = useState<OrderDTO | null>(null); const [message, setMessage] = useState(""); const [error, setError] = useState(""); const [now, setNow] = useState(() => Date.now()); const [sound, setSound] = useState(false); const [kitchenMode, setKitchenMode] = useState(false);
+  const boardRef = useRef<HTMLDivElement>(null); const readyIds = useRef<Set<number> | null>(null);
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 30000); return () => window.clearInterval(timer); }, []);
+  useEffect(() => { setSound(window.localStorage.getItem("suya-ready-sound") === "on"); }, []);
+  useEffect(() => { const next = new Set((data?.orders ?? []).filter((order) => order.status === "prete").map((order) => order.id)); if (readyIds.current && sound && [...next].some((id) => !readyIds.current?.has(id))) { const audio = new AudioContext(); const osc = audio.createOscillator(); const gain = audio.createGain(); osc.frequency.value = 880; gain.gain.value = 0.05; osc.connect(gain); gain.connect(audio.destination); osc.start(); osc.stop(audio.currentTime + 0.16); } readyIds.current = next; }, [data, sound]);
   useEffect(() => { if (!message && !error) return; const timer = window.setTimeout(() => { setMessage(""); setError(""); }, 4000); return () => window.clearTimeout(timer); }, [message, error]);
-
   const allOrders = data?.orders ?? [];
-  const servers = useMemo(() => [...new Map(allOrders.filter((order) => order.serverName).map((order) => [order.serverName!, order.serverName!])).values()], [allOrders]);
-  const tables = useMemo(() => [...new Set(allOrders.map((order) => order.tableNumber))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [allOrders]);
-
-  const orders = useMemo(() => {
-    const current = new Date(); current.setHours(0, 0, 0, 0);
-    const yesterday = new Date(current); yesterday.setDate(current.getDate() - 1);
-    const week = new Date(current); week.setDate(current.getDate() - ((current.getDay() + 6) % 7));
-    const to = new Date(current); to.setDate(current.getDate() + 1);
-    const matchesDate = (order: OrderDTO) => {
-      const date = new Date(order.createdAt);
-      if (dateFilter === "today") return date >= current && date < to;
-      if (dateFilter === "yesterday") return date >= yesterday && date < current;
-      if (dateFilter === "week") return date >= week;
-      if (dateFilter === "custom") return (!customFrom || date >= new Date(`${customFrom}T00:00:00`)) && (!customTo || date <= new Date(`${customTo}T23:59:59`));
-      return true;
-    };
-    const query = search.trim().toLowerCase();
-    return allOrders.filter((order) => {
-      const text = [order.reference, order.tableNumber, order.serverName, order.cookName].filter(Boolean).join(" ").toLowerCase();
-      return (status === "all" || order.status === status) && (server === "all" || order.serverName === server) && (!table || order.tableNumber === table) && (payment === "all" || (payment === "paid" ? order.paymentStatus === "paye" : order.paymentStatus !== "paye")) && matchesDate(order) && (!query || text.includes(query));
-    });
-  }, [allOrders, search, status, server, table, payment, dateFilter, customFrom, customTo]);
-
-  const counts = useMemo(() => Object.fromEntries(COLUMNS.map((column) => [column.id, orders.filter((order) => column.statuses.includes(order.status)).length])) as Record<ColumnId, number>, [orders]);
-
-  async function moveOrder(target: OrderStatus) {
-    if (!draggedId) return;
-    const order = allOrders.find((item) => item.id === draggedId);
-    setDraggedId(null);
-    if (!order || order.status === target) return;
-    setMovingId(order.id); setError("");
-    try { await apiSend(`/api/orders/${order.id}`, { action: "move-status", status: target }); setMessage(`${order.reference} mis à jour.`); await refresh(); }
-    catch (err) { setError(err instanceof Error ? err.message : "Mise à jour impossible"); }
-    finally { setMovingId(null); }
-  }
-
-  async function cancel(order: OrderDTO) {
-    if (!window.confirm(`Annuler ${order.reference} ? Cette action reste tracée.`)) return;
-    setMovingId(order.id); setError("");
-    try { await apiSend(`/api/orders/${order.id}`, { action: "cancel", reason: "Annulation depuis le tableau Kanban" }); setMessage(`${order.reference} annulée.`); await refresh(); }
-    catch (err) { setError(err instanceof Error ? err.message : "Annulation impossible"); }
-    finally { setMovingId(null); }
-  }
-
-  return (
-    <div className="mx-auto max-w-[1800px] space-y-4 pb-6">
-      <header className="flex flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm lg:flex-row lg:items-center lg:justify-between"><div><p className="text-xs font-bold uppercase tracking-[.18em] text-amber-700">SUYA Food · Opérations</p><h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">Commandes</h1><p className="mt-1 text-sm text-slate-500">Suivez le service en temps réel, de la caisse à la livraison.</p></div><div className="flex flex-wrap gap-2"><button onClick={() => refresh()} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-600 transition hover:bg-slate-50">↻ Rafraîchir</button><Link href="/serveur/nouvelle" className="rounded-xl bg-[#f4c430] px-4 py-2.5 text-sm font-bold text-[#121212] transition hover:bg-[#d9a404]">＋ Nouvelle commande</Link></div></header>
-
-      <section className="grid grid-cols-2 gap-2 sm:grid-cols-5">{[...COLUMNS.map((column) => ({ label: column.title, value: counts[column.id], tone: column.id })), { label: "Total", value: orders.length, tone: "total" }].map((item) => <div key={item.label} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><p className="text-xs font-semibold text-slate-500">{item.label}</p><p className="mt-1 text-2xl font-bold text-slate-900">{item.value}</p></div>)}</section>
-
-      <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_11rem_11rem_11rem_11rem]"><label className="relative"><span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">⌕</span><input className={`${inputClass} pl-9`} placeholder="Référence, table, serveur ou cuisinier…" value={search} onChange={(event) => setSearch(event.target.value)} /></label><select className={inputClass} value={status} onChange={(event) => setStatus(event.target.value as OrderStatus | "all")}><option value="all">Tous les statuts</option>{ORDER_STATUSES.map((value) => <option key={value} value={value}>{STATUS_SHORT[value]}</option>)}</select><select className={inputClass} value={server} onChange={(event) => setServer(event.target.value)}><option value="all">Tous les serveurs</option>{servers.map((name) => <option key={name} value={name}>{name}</option>)}</select><select className={inputClass} value={table} onChange={(event) => setTable(event.target.value)}><option value="">Toutes les tables</option>{tables.map((value) => <option key={value} value={value}>Table {value}</option>)}</select><select className={inputClass} value={payment} onChange={(event) => setPayment(event.target.value)}><option value="all">Tous paiements</option><option value="paid">Payées</option><option value="unpaid">Non payées</option></select></div><div className="mt-3 flex flex-wrap items-center gap-2"><span className="mr-1 text-xs font-semibold text-slate-500">Période :</span>{([ ["today", "Aujourd’hui"], ["yesterday", "Hier"], ["week", "Cette semaine"], ["all", "Toutes"], ["custom", "Personnalisée"] ] as const).map(([value, label]) => <button key={value} onClick={() => setDateFilter(value)} className={`rounded-full px-3 py-1.5 text-xs font-bold transition ${dateFilter === value ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>{label}</button>)}{dateFilter === "custom" && <><input type="date" aria-label="Du" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} className="rounded-lg border border-slate-200 px-2 py-1 text-xs" /><input type="date" aria-label="Au" value={customTo} onChange={(event) => setCustomTo(event.target.value)} className="rounded-lg border border-slate-200 px-2 py-1 text-xs" /></>}</div></section>
-
-      {message && <Toast message={message} tone="success" />}{error && <Toast message={error} tone="error" />}
-
-      <div className="flex gap-2 overflow-x-auto pb-1 lg:hidden">{COLUMNS.map((column) => <button key={column.id} onClick={() => setMobileColumn(column.id)} className={`shrink-0 rounded-xl px-3 py-2 text-xs font-bold ${mobileColumn === column.id ? "bg-slate-900 text-white" : "bg-white text-slate-600 ring-1 ring-slate-200"}`}>{column.title} · {counts[column.id]}</button>)}</div>
-      <section className="grid gap-4 lg:grid-cols-4">{COLUMNS.map((column) => { const columnOrders = orders.filter((order) => column.statuses.includes(order.status)); const visible = mobileColumn === column.id; return <div key={column.id} onDragOver={(event) => { if (column.target) event.preventDefault(); }} onDrop={() => column.target && moveOrder(column.target)} className={`${column.tone} ${visible ? "block" : "hidden"} min-h-[330px] rounded-3xl border p-3 lg:block`}><div className="mb-3 flex items-center justify-between px-1"><div><h2 className="font-bold text-slate-800">{column.title}</h2><p className="text-[11px] text-slate-500">{column.subtitle}</p></div><span className="grid h-7 min-w-7 place-items-center rounded-lg bg-white px-1 text-xs font-bold text-slate-600 shadow-sm">{columnOrders.length}</span></div><div className="space-y-3">{columnOrders.map((order) => <div key={order.id} onDragStart={() => setDraggedId(order.id)}><OrderCard order={order} now={now} moving={movingId === order.id} onCancel={cancel} /></div>)}{columnOrders.length === 0 && <div className="rounded-2xl border border-dashed border-slate-300 bg-white/50 px-3 py-8 text-center text-xs text-slate-400">Aucune commande</div>}</div></div>; })}</section>
-      {(status === "annulee" || (status === "all" && dateFilter !== "today")) && orders.some((order) => order.status === "annulee") && <section className="rounded-3xl border border-rose-100 bg-rose-50/40 p-4"><h2 className="text-sm font-bold text-rose-800">Commandes annulées</h2><div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{orders.filter((order) => order.status === "annulee").map((order) => <OrderCard key={order.id} order={order} now={now} moving={false} onCancel={cancel} />)}</div></section>}
-      {!loading && orders.length === 0 && <Empty text="Aucune commande ne correspond aux filtres sélectionnés." />}
-    </div>
-  );
+  const servers = useMemo(() => [...new Set(allOrders.map((order) => order.serverName).filter(Boolean))] as string[], [allOrders]); const tables = useMemo(() => [...new Set(allOrders.map((order) => order.tableNumber))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [allOrders]);
+  const orders = useMemo(() => { const start = new Date(); start.setHours(0, 0, 0, 0); const yesterday = new Date(start); yesterday.setDate(start.getDate() - 1); const week = new Date(start); week.setDate(start.getDate() - ((start.getDay() + 6) % 7)); const tomorrow = new Date(start); tomorrow.setDate(start.getDate() + 1); const query = search.trim().toLowerCase(); return allOrders.filter((order) => { const date = new Date(order.createdAt); const dateMatch = dateFilter === "today" ? date >= start && date < tomorrow : dateFilter === "yesterday" ? date >= yesterday && date < start : dateFilter === "week" ? date >= week : dateFilter === "custom" ? (!customFrom || date >= new Date(`${customFrom}T00:00:00`)) && (!customTo || date <= new Date(`${customTo}T23:59:59`)) : true; const text = [order.reference, order.tableNumber, order.serverName, order.cookName, ...order.items.map((item) => item.dishName)].filter(Boolean).join(" ").toLowerCase(); return dateMatch && (status === "all" || order.status === status) && (server === "all" || order.serverName === server) && (!table || order.tableNumber === table) && (payment === "all" || (payment === "paid" ? order.paymentStatus === "paye" : order.paymentStatus !== "paye")) && (!query || text.includes(query)); }); }, [allOrders, search, status, server, table, payment, dateFilter, customFrom, customTo]);
+  const counts = useMemo(() => Object.fromEntries(COLUMNS.map((column) => [column.id, orders.filter((order) => column.statuses.includes(order.status)).length])) as Record<ColumnId, number>, [orders]); const averagePrep = useMemo(() => { const done = orders.filter((order) => order.prepSeconds !== null); return done.length ? Math.round(done.reduce((sum, order) => sum + (order.prepSeconds ?? 0), 0) / done.length / 60) : 0; }, [orders]);
+  async function moveOrder(target: OrderStatus) { if (!draggedId) return; const order = allOrders.find((item) => item.id === draggedId); setDraggedId(null); if (!order || order.status === target) return; setMovingId(order.id); setError(""); try { await apiSend(`/api/orders/${order.id}`, { action: "move-status", status: target }); setMessage(`${order.reference} déplacée vers ${target === "en_preparation" ? "la préparation" : target === "prete" ? "les commandes prêtes" : "les commandes servies"}.`); await refresh(); } catch (err) { setError(err instanceof Error ? err.message : "Mise à jour impossible"); } finally { setMovingId(null); } }
+  async function cancel(order: OrderDTO) { if (!window.confirm(`Annuler ${order.reference} ? Cette action reste tracée.`)) return; setMovingId(order.id); try { await apiSend(`/api/orders/${order.id}`, { action: "cancel", reason: "Annulation depuis le tableau Kanban" }); setMessage(`${order.reference} annulée.`); await refresh(); } catch (err) { setError(err instanceof Error ? err.message : "Annulation impossible"); } finally { setMovingId(null); } }
+  function toggleSound() { const next = !sound; setSound(next); window.localStorage.setItem("suya-ready-sound", next ? "on" : "off"); setMessage(next ? "Signal sonore activé pour les commandes prêtes." : "Signal sonore désactivé."); }
+  async function toggleKitchenMode() { setKitchenMode((value) => !value); if (!kitchenMode && boardRef.current?.requestFullscreen) await boardRef.current.requestFullscreen(); else if (document.fullscreenElement) await document.exitFullscreen(); }
+  const visibleColumns = kitchenMode ? COLUMNS.filter((column) => column.id !== "served") : COLUMNS;
+  return <div ref={boardRef} className={`mx-auto max-w-[1800px] space-y-4 pb-6 ${kitchenMode ? "min-h-screen max-w-none bg-slate-100 p-5" : ""}`}>
+    <header className="flex flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm lg:flex-row lg:items-center lg:justify-between"><div><p className="text-xs font-bold uppercase tracking-[.18em] text-amber-700">SUYA Food · Opérations</p><h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">{kitchenMode ? "Vue cuisine" : "Commandes"}</h1><p className="mt-1 text-sm text-slate-500">Suivez le service en temps réel, de la caisse à la livraison.</p></div><div className="flex flex-wrap gap-2"><button onClick={toggleSound} className={`rounded-xl border px-3 py-2.5 text-xs font-bold ${sound ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 text-slate-600"}`}>🔔 Son {sound ? "activé" : "désactivé"}</button><button onClick={toggleKitchenMode} className="rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-50">⛶ {kitchenMode ? "Quitter cuisine" : "Mode cuisine"}</button><button onClick={() => refresh()} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-50">↻ Rafraîchir</button>{!kitchenMode && <Link href="/serveur/nouvelle" className="rounded-xl bg-[#f4c430] px-4 py-2.5 text-sm font-bold text-[#121212] hover:bg-[#d9a404]">＋ Nouvelle commande</Link>}</div></header>
+    <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-7">{[{ label: "Commandes", value: orders.length, icon: "🧾" }, { label: "Recettes", value: money(orders.reduce((sum, order) => sum + order.total, 0)), icon: "💰" }, { label: "En attente", value: counts.waiting, icon: "🟡" }, { label: "Préparation", value: counts.preparing, icon: "🔵" }, { label: "Prêtes", value: counts.ready, icon: "🟢" }, { label: "Servies", value: counts.served, icon: "⚫" }, { label: "Temps moyen", value: `${averagePrep} min`, icon: "⏱" }].filter((item) => !kitchenMode || !["Recettes", "Servies"].includes(item.label)).map((item) => <div key={item.label} className="rounded-2xl border border-slate-200 bg-white px-3 py-3 shadow-sm"><p className="text-[11px] font-semibold text-slate-500">{item.icon} {item.label}</p><p className="mt-1 text-xl font-bold text-slate-900">{item.value}</p></div>)}</section>
+    {!kitchenMode && <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_11rem_11rem_11rem_11rem]"><label className="relative"><span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">⌕</span><input className={`${inputClass} pl-9`} placeholder="Commande, table, serveur, cuisinier ou plat…" value={search} onChange={(event) => setSearch(event.target.value)} /></label><select className={inputClass} value={status} onChange={(event) => setStatus(event.target.value as OrderStatus | "all")}><option value="all">Tous les statuts</option>{ORDER_STATUSES.map((value) => <option key={value} value={value}>{STATUS_SHORT[value]}</option>)}</select><select className={inputClass} value={server} onChange={(event) => setServer(event.target.value)}><option value="all">Tous les serveurs</option>{servers.map((name) => <option key={name} value={name}>{name}</option>)}</select><select className={inputClass} value={table} onChange={(event) => setTable(event.target.value)}><option value="">Toutes les tables</option>{tables.map((value) => <option key={value} value={value}>Table {value}</option>)}</select><select className={inputClass} value={payment} onChange={(event) => setPayment(event.target.value)}><option value="all">Tous paiements</option><option value="paid">Payées</option><option value="unpaid">Non payées</option></select></div><div className="mt-3 flex flex-wrap items-center gap-2"><span className="mr-1 text-xs font-semibold text-slate-500">Période :</span>{([ ["today", "Aujourd’hui"], ["yesterday", "Hier"], ["week", "Cette semaine"], ["all", "Toutes"], ["custom", "Personnalisée"] ] as const).map(([value, label]) => <button key={value} onClick={() => setDateFilter(value)} className={`rounded-full px-3 py-1.5 text-xs font-bold ${dateFilter === value ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600"}`}>{label}</button>)}{dateFilter === "custom" && <><input type="date" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} className="rounded-lg border border-slate-200 px-2 py-1 text-xs" /><input type="date" value={customTo} onChange={(event) => setCustomTo(event.target.value)} className="rounded-lg border border-slate-200 px-2 py-1 text-xs" /></>}</div></section>}
+    {message && <Toast message={message} tone="success" />}{error && <Toast message={error} tone="error" />}
+    <div className="flex gap-2 overflow-x-auto pb-1 lg:hidden">{visibleColumns.map((column) => <button key={column.id} onClick={() => setMobileColumn(column.id)} className={`shrink-0 rounded-xl px-3 py-2 text-xs font-bold ${mobileColumn === column.id ? "bg-slate-900 text-white" : "bg-white text-slate-600 ring-1 ring-slate-200"}`}>{column.title} · {counts[column.id]}</button>)}</div>
+    <section className={`grid gap-4 ${visibleColumns.length === 3 ? "lg:grid-cols-3" : "lg:grid-cols-4"}`}>{visibleColumns.map((column) => { const columnOrders = orders.filter((order) => column.statuses.includes(order.status)); const visible = mobileColumn === column.id; return <div key={column.id} onDragOver={(event) => { if (column.target) event.preventDefault(); }} onDrop={() => column.target && moveOrder(column.target)} className={`${column.tone} ${visible ? "block" : "hidden"} min-h-[330px] rounded-3xl border p-3 lg:block`}><div className="mb-3 flex items-center justify-between px-1"><h2 className="font-bold text-slate-800">{column.title}</h2><span className="grid h-7 min-w-7 place-items-center rounded-lg bg-white px-1 text-xs font-bold text-slate-600 shadow-sm">{columnOrders.length}</span></div><div className="space-y-3">{columnOrders.map((order) => <div key={order.id} onDragStart={() => setDraggedId(order.id)}><OrderCard order={order} now={now} moving={movingId === order.id} onCancel={cancel} onOpen={setSelected} /></div>)}{columnOrders.length === 0 && <div className="rounded-2xl border border-dashed border-slate-300 bg-white/50 px-3 py-8 text-center text-xs text-slate-400">Aucune commande</div>}</div></div>; })}</section>
+    {!loading && orders.length === 0 && <Empty text="Aucune commande ne correspond aux filtres sélectionnés." />}<Drawer order={selected} now={now} onClose={() => setSelected(null)} />
+    <style jsx global>{`@keyframes slide-in{from{transform:translateX(100%)}to{transform:translateX(0)}}`}</style>
+  </div>;
 }

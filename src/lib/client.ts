@@ -30,8 +30,11 @@ export function useLive<T>(url: string, intervalMs = 4000) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const mounted = useRef(true);
+  const inFlight = useRef(false);
 
   const refresh = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     try {
       const result = await apiGet<T>(url);
       if (mounted.current) {
@@ -42,16 +45,38 @@ export function useLive<T>(url: string, intervalMs = 4000) {
       if (mounted.current) setError(err instanceof Error ? err.message : "Erreur");
     } finally {
       if (mounted.current) setLoading(false);
+      inFlight.current = false;
     }
   }, [url]);
 
   useEffect(() => {
     mounted.current = true;
-    refresh();
-    const timer = setInterval(refresh, intervalMs);
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const stopPolling = () => {
+      if (timer) clearInterval(timer);
+      timer = undefined;
+    };
+    const startPolling = () => {
+      if (document.hidden || timer) return;
+      refresh();
+      timer = setInterval(refresh, intervalMs);
+    };
+    const onVisibilityChange = () => {
+      if (document.hidden) stopPolling();
+      else startPolling();
+    };
+    const onFocus = () => {
+      if (!document.hidden) refresh();
+    };
+
+    startPolling();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onFocus);
     return () => {
       mounted.current = false;
-      clearInterval(timer);
+      stopPolling();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onFocus);
     };
   }, [refresh, intervalMs]);
 

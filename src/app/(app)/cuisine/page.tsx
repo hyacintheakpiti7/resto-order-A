@@ -1,250 +1,37 @@
 "use client";
 
-import { useState } from "react";
-import { Button, Card, Empty, Modal, PriorityBadge, StatCard, StatusBadge, Toast, inputClass } from "@/components/ui";
-import { apiSend, useLive } from "@/lib/client";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Button, Empty, Modal, Toast } from "@/components/ui";
+import { useKitchen, type Cook } from "@/hooks/useKitchen";
+import { apiSend } from "@/lib/client";
 import type { OrderDTO } from "@/lib/orders";
-import { clock, duration, elapsedSince } from "@/lib/format";
-import { PRIORITIES, PRIORITY_LABELS, type Priority } from "@/lib/constants";
+import { PRIORITIES, PRIORITY_LABELS, type Priority } from "@/constants/priorities";
 
-type Cook = { id: number; fullName: string; code: string; active: boolean };
+type Station = "all" | "grillades" | "friture" | "boissons";
+const STATIONS: { id: Station; label: string; icon: string }[] = [{ id: "all", label: "Tout", icon: "🍽️" }, { id: "grillades", label: "Grillades", icon: "🍢" }, { id: "friture", label: "Friture", icon: "🍟" }, { id: "boissons", label: "Boissons", icon: "🥤" }];
+const PRIORITY_ORDER: Record<string, number> = { urgente: 0, haute: 1, normale: 2, basse: 3 };
 
-const ORDER_OF_PRIORITY: Record<string, number> = { urgente: 0, haute: 1, normale: 2, basse: 3 };
+function elapsed(order: OrderDTO, now: number) { return Math.max(0, Math.floor((now - new Date(order.createdAt).getTime()) / 60000)); }
+function belongsToStation(order: OrderDTO, station: Station) { if (station === "all") return true; const words = order.items.map((item) => `${item.dishName} ${item.categoryName}`.toLowerCase()).join(" "); return station === "grillades" ? /suya|brochette|grill|viande|poulet/.test(words) : station === "friture" ? /frite|frit|alloco|beignet/.test(words) : /boisson|coca|jus|eau|soda/.test(words); }
+
+function KdsCard({ order, now, busy, onAssign, onAdvance }: { order: OrderDTO; now: number; busy: boolean; onAssign: (order: OrderDTO) => void; onAdvance: (order: OrderDTO) => void }) {
+  const minutes = elapsed(order, now); const late = minutes > 20;
+  const action = order.status === "validee" ? "Attribuer" : order.status === "assignee" ? "Démarrer" : order.status === "en_preparation" ? "Marquer prête" : null;
+  return <article className={`rounded-3xl border-2 bg-white p-5 shadow-sm transition ${late ? "border-rose-400 animate-[pulse_2.4s_ease-in-out_infinite]" : order.status === "prete" ? "border-emerald-300" : "border-slate-200"}`}><div className="flex items-start justify-between gap-3"><div><p className="font-mono text-xl font-black text-slate-900">{order.reference}</p><p className="mt-1 text-base font-semibold text-slate-600">Table {order.tableNumber} · {order.guests} couvert(s)</p></div><span className={`rounded-xl px-3 py-2 text-lg font-black tabular-nums ${minutes < 10 ? "bg-emerald-50 text-emerald-700" : minutes <= 20 ? "bg-amber-50 text-amber-700" : "bg-rose-50 text-rose-700"}`}>⏱ {minutes} min</span></div>{late && <p className="mt-3 rounded-xl bg-rose-100 px-3 py-2 text-sm font-bold text-rose-700">🔴 PRIORITAIRE — dépasse 20 minutes</p>}<div className="mt-4 space-y-2 border-y border-slate-100 py-4">{order.items.map((item) => <p key={item.id} className="text-lg font-semibold text-slate-800"><span className="mr-2">🍽️</span>{item.quantity} × {item.dishName}{item.notes && <small className="ml-2 text-sm font-normal italic text-rose-600">— {item.notes}</small>}</p>)}</div><div className="mt-4 flex items-center justify-between gap-3"><span className="text-sm font-semibold text-slate-500">{order.cookName ?? "À attribuer"}</span>{action && <Button onClick={() => order.status === "validee" ? onAssign(order) : onAdvance(order)} disabled={busy} className="min-h-12 text-base">{action === "Attribuer" ? "👨‍🍳 Attribuer" : action === "Démarrer" ? "🔥 Démarrer" : "✓ Prête"}</Button>}{order.status === "prete" && <span className="rounded-xl bg-emerald-100 px-3 py-2 text-sm font-bold text-emerald-700">✓ À servir</span>}</div></article>;
+}
 
 export default function CuisinePage() {
-  const { data, refresh } = useLive<{ orders: OrderDTO[] }>(
-    "/api/orders?status=validee,assignee,en_preparation,prete&limit=100",
-    3500,
-  );
-  const { data: cooksData } = useLive<{ users: Cook[] }>("/api/users?role=cuisinier", 30000);
-  const [target, setTarget] = useState<OrderDTO | null>(null);
-  const [cookId, setCookId] = useState<number | "">("");
-  const [priority, setPriority] = useState<Priority>("normale");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const orders = data?.orders ?? [];
-  const cooks = (cooksData?.users ?? []).filter((c) => c.active);
-  const toAssign = orders
-    .filter((o) => o.status === "validee")
-    .sort((a, b) => ORDER_OF_PRIORITY[a.priority] - ORDER_OF_PRIORITY[b.priority]);
-  const running = orders.filter((o) => ["assignee", "en_preparation"].includes(o.status));
-  const ready = orders.filter((o) => o.status === "prete");
-
-  const prepDone = orders.filter((o) => o.prepSeconds);
-  const avgPrep = prepDone.length
-    ? Math.round(prepDone.reduce((s, o) => s + (o.prepSeconds ?? 0), 0) / prepDone.length)
-    : 0;
-
-  async function assign() {
-    if (!target || !cookId) return setError("Sélectionnez un cuisinier");
-    setBusy(true);
-    setError("");
-    try {
-      await apiSend(`/api/orders/${target.id}`, { action: "assign", cookId, priority });
-      setTarget(null);
-      setCookId("");
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Erreur");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function changePriority(order: OrderDTO, value: string) {
-    await apiSend(`/api/orders/${order.id}`, { action: "priority", priority: value });
-    refresh();
-  }
-
-  const load = new Map<number, number>();
-  for (const o of running) if (o.cookId) load.set(o.cookId, (load.get(o.cookId) ?? 0) + 1);
-
-  return (
-    <div className="space-y-5">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard label="À attribuer" value={toAssign.length} icon="📥" tone="amber" />
-        <StatCard label="En préparation" value={running.length} icon="🔥" tone="violet" />
-        <StatCard label="Prêtes à servir" value={ready.length} icon="🔔" tone="emerald" />
-        <StatCard label="Temps moyen préparation" value={duration(avgPrep)} icon="⏱️" tone="sky" />
-      </div>
-
-      {error && !target && <Toast message={error} tone="error" />}
-
-      <div className="grid gap-4 xl:grid-cols-3">
-        <Card title="📥 Nouvelles commandes validées" subtitle="Classées par priorité">
-          {toAssign.length === 0 ? (
-            <Empty icon="✅" text="Aucune commande en attente d'attribution." />
-          ) : (
-            <div className="space-y-3">
-              {toAssign.map((o) => (
-                <div key={o.id} className="rounded-2xl border border-slate-200 bg-white p-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <p className="font-mono text-sm font-bold text-slate-800">{o.reference}</p>
-                      <p className="text-xs text-slate-500">
-                        Table {o.tableNumber} • validée à {clock(o.validatedAt)}
-                      </p>
-                    </div>
-                    <PriorityBadge priority={o.priority} />
-                  </div>
-                  <ul className="mt-2 space-y-0.5 text-xs text-slate-700">
-                    {o.items.map((i) => (
-                      <li key={i.id}>
-                        <strong>{i.quantity}×</strong> {i.dishName}
-                        {i.supplements.length > 0 && (
-                          <em className="text-amber-700">
-                            {" "}
-                            (+{i.supplements.map((s) => s.name).join(", ")})
-                          </em>
-                        )}
-                        {i.notes && <em className="text-slate-500"> — {i.notes}</em>}
-                      </li>
-                    ))}
-                  </ul>
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <select
-                      className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
-                      value={o.priority}
-                      onChange={(e) => changePriority(o, e.target.value)}
-                    >
-                      {PRIORITIES.map((p) => (
-                        <option key={p} value={p}>
-                          Priorité {PRIORITY_LABELS[p]}
-                        </option>
-                      ))}
-                    </select>
-                    <Button
-                      size="sm"
-                      onClick={() => {
-                        setTarget(o);
-                        setPriority(o.priority as Priority);
-                        setError("");
-                      }}
-                    >
-                      👨‍🍳 Attribuer
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
-
-        <Card title="🔥 Préparations en cours" className="xl:col-span-2">
-          {running.length === 0 ? (
-            <Empty icon="🍳" text="Aucune préparation en cours." />
-          ) : (
-            <div className="grid gap-3 md:grid-cols-2">
-              {running.map((o) => (
-                <div
-                  key={o.id}
-                  className="rounded-2xl border border-violet-200 bg-violet-50/50 p-3"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <p className="font-mono text-sm font-bold text-slate-800">{o.reference}</p>
-                      <p className="text-xs text-slate-600">
-                        Table {o.tableNumber} • {o.cookName}
-                      </p>
-                    </div>
-                    <StatusBadge status={o.status} />
-                  </div>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Attribuée à {clock(o.assignedAt)}
-                    {o.startedAt ? ` • démarrée depuis ${elapsedSince(o.startedAt)}` : ""}
-                  </p>
-                  <ul className="mt-2 text-xs text-slate-700">
-                    {o.items.map((i) => (
-                      <li key={i.id}>
-                        {i.quantity}× {i.dishName}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {ready.length > 0 && (
-            <div className="mt-4 rounded-2xl bg-emerald-50 p-3">
-              <p className="text-xs font-bold uppercase tracking-wide text-emerald-700">
-                Prêtes — en attente de service
-              </p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {ready.map((o) => (
-                  <span
-                    key={o.id}
-                    className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200"
-                  >
-                    {o.reference} • T{o.tableNumber} • {duration(o.prepSeconds)}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-        </Card>
-      </div>
-
-      <Card title="Charge de travail des cuisiniers">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {cooks.map((c) => (
-            <div key={c.id} className="rounded-2xl border border-slate-200 p-4">
-              <p className="text-sm font-semibold text-slate-800">{c.fullName}</p>
-              <p className="text-xs text-slate-500">{c.code}</p>
-              <p className="mt-2 text-2xl font-bold text-amber-600">{load.get(c.id) ?? 0}</p>
-              <p className="text-xs text-slate-400">commande(s) en cours</p>
-            </div>
-          ))}
-          {cooks.length === 0 && <p className="text-sm text-slate-400">Aucun cuisinier actif.</p>}
-        </div>
-      </Card>
-
-      <Modal
-        open={Boolean(target)}
-        onClose={() => setTarget(null)}
-        title={`Attribuer ${target?.reference ?? ""}`}
-      >
-        <div className="space-y-3">
-          <label className="block">
-            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Cuisinier
-            </span>
-            <select
-              className={inputClass}
-              value={cookId}
-              onChange={(e) => setCookId(Number(e.target.value))}
-            >
-              <option value="">— Sélectionner —</option>
-              {cooks.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.fullName} ({load.get(c.id) ?? 0} en cours)
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Priorité
-            </span>
-            <select
-              className={inputClass}
-              value={priority}
-              onChange={(e) => setPriority(e.target.value as Priority)}
-            >
-              {PRIORITIES.map((p) => (
-                <option key={p} value={p}>
-                  {PRIORITY_LABELS[p]}
-                </option>
-              ))}
-            </select>
-          </label>
-          {error && <Toast message={error} tone="error" />}
-          <Button className="w-full" onClick={assign} disabled={busy}>
-            Confirmer l&apos;attribution
-          </Button>
-        </div>
-      </Modal>
-    </div>
-  );
+  const { data, refresh, cooks } = useKitchen();
+  const [station, setStation] = useState<Station>("all"); const [now, setNow] = useState(Date.now()); const [target, setTarget] = useState<OrderDTO | null>(null); const [cookId, setCookId] = useState<number | "">(""); const [priority, setPriority] = useState<Priority>("normale"); const [busyId, setBusyId] = useState<number | null>(null); const [message, setMessage] = useState(""); const [error, setError] = useState(""); const [alert, setAlert] = useState<OrderDTO | null>(null);
+  const screenRef = useRef<HTMLDivElement>(null); const knownOrders = useRef<Set<number> | null>(null);
+  useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 30000); return () => window.clearInterval(timer); }, []);
+  useEffect(() => { const incoming = (data?.orders ?? []).filter((order) => order.status === "validee"); const next = new Set(incoming.map((order) => order.id)); const fresh = knownOrders.current ? incoming.find((order) => !knownOrders.current?.has(order.id)) : null; if (fresh) setAlert(fresh); knownOrders.current = next; }, [data]);
+  useEffect(() => { if (!message && !error) return; const timer = window.setTimeout(() => { setMessage(""); setError(""); }, 4000); return () => window.clearTimeout(timer); }, [message, error]);
+  const orders = useMemo(() => (data?.orders ?? []).filter((order) => belongsToStation(order, station)).sort((a, b) => { const lateDifference = Number(elapsed(b, now) > 20) - Number(elapsed(a, now) > 20); return lateDifference || PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority] || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(); }), [data, station, now]);
+  const queued = orders.filter((order) => order.status === "validee"); const running = orders.filter((order) => ["assignee", "en_preparation"].includes(order.status)); const ready = orders.filter((order) => order.status === "prete");
+  async function assign() { if (!target || !cookId) return setError("Sélectionnez un cuisinier."); setBusyId(target.id); try { await apiSend(`/api/orders/${target.id}`, { action: "assign", cookId, priority }); setTarget(null); setMessage(`${target.reference} attribuée.`); await refresh(); } catch (err) { setError(err instanceof Error ? err.message : "Attribution impossible"); } finally { setBusyId(null); } }
+  async function advance(order: OrderDTO) { const action = order.status === "assignee" ? "start" : "ready"; setBusyId(order.id); try { await apiSend(`/api/orders/${order.id}`, { action }); setMessage(action === "start" ? `${order.reference} démarrée.` : `${order.reference} est prête.`); await refresh(); } catch (err) { setError(err instanceof Error ? err.message : "Mise à jour impossible"); } finally { setBusyId(null); } }
+  async function fullScreen() { if (document.fullscreenElement) await document.exitFullscreen(); else await screenRef.current?.requestFullscreen(); }
+  const columns = [["À préparer", queued, "border-amber-300 bg-amber-50/40"], ["En cours", running, "border-sky-300 bg-sky-50/40"], ["Prêtes", ready, "border-emerald-300 bg-emerald-50/40"]] as const;
+  return <div ref={screenRef} className="min-h-screen bg-slate-100 p-4 sm:p-6"><header className="mb-5 flex flex-col gap-4 rounded-3xl bg-[#121212] p-5 text-white shadow-xl lg:flex-row lg:items-center lg:justify-between"><div><p className="text-xs font-bold uppercase tracking-[.22em] text-[#f4c430]">SUYA Food · Kitchen Display System</p><h1 className="mt-1 text-3xl font-black">Cuisine</h1><p className="mt-1 text-sm text-white/55">Triée automatiquement par urgence · alertes sonores actives</p></div><div className="flex flex-wrap gap-2"><button onClick={fullScreen} className="rounded-xl bg-white/10 px-3 py-2 text-sm font-bold text-white hover:bg-white/20">⛶ Plein écran</button></div></header><div className="mb-5 flex gap-2 overflow-x-auto pb-1">{STATIONS.map((item) => <button key={item.id} onClick={() => setStation(item.id)} className={`shrink-0 rounded-xl px-4 py-3 text-sm font-bold ${station === item.id ? "bg-[#f4c430] text-[#121212]" : "bg-white text-slate-600 ring-1 ring-slate-200"}`}>{item.icon} {item.label}</button>)}</div>{message && <Toast message={message} tone="success" />}{error && <Toast message={error} tone="error" />}<section className="grid gap-5 xl:grid-cols-3">{columns.map(([title, columnOrders, tone]) => <div key={title} className={`min-h-[520px] rounded-3xl border-2 p-4 ${tone}`}><div className="mb-4 flex items-center justify-between"><h2 className="text-xl font-black text-slate-900">{title}</h2><span className="grid h-9 min-w-9 place-items-center rounded-xl bg-white px-2 font-black text-slate-700">{columnOrders.length}</span></div><div className="space-y-4">{columnOrders.map((order) => <KdsCard key={order.id} order={order} now={now} busy={busyId === order.id} onAssign={(item) => { setTarget(item); setPriority(item.priority as Priority); }} onAdvance={advance} />)}{columnOrders.length === 0 && <Empty icon="✓" text="Aucune commande dans cette file." />}</div></div>)}</section>{alert && <button onClick={() => setAlert(null)} className="fixed inset-0 z-50 grid place-items-center bg-slate-950/50 p-5 text-left"><div className="w-full max-w-lg rounded-3xl bg-[#f4c430] p-7 text-[#121212] shadow-2xl"><p className="text-sm font-black uppercase tracking-[.18em]">🔔 Nouvelle commande reçue</p><p className="mt-3 font-mono text-3xl font-black">{alert.reference}</p><p className="mt-2 text-lg font-semibold">Table {alert.tableNumber} · {alert.items.length} article(s)</p><p className="mt-6 text-sm font-bold">Touchez n’importe où pour fermer</p></div></button>}<Modal open={Boolean(target)} onClose={() => setTarget(null)} title={`Attribuer ${target?.reference ?? ""}`}><div className="space-y-4"><label className="block text-sm font-semibold text-slate-700">Cuisinier<select value={cookId} onChange={(event) => setCookId(Number(event.target.value))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2.5"><option value="">— Sélectionner —</option>{cooks.filter((cook: Cook) => cook.active).map((cook: Cook) => <option key={cook.id} value={cook.id}>{cook.fullName} ({cook.code})</option>)}</select></label><label className="block text-sm font-semibold text-slate-700">Priorité<select value={priority} onChange={(event) => setPriority(event.target.value as Priority)} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2.5">{PRIORITIES.map((value) => <option key={value} value={value}>{PRIORITY_LABELS[value]}</option>)}</select></label><Button onClick={assign} disabled={busyId === target?.id} className="w-full">Confirmer l’attribution</Button></div></Modal></div>;
 }

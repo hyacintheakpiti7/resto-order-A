@@ -1,0 +1,4 @@
+import { PRIORITY_LABELS, PRIORITY_STYLES, STATUS_SHORT, STATUS_STYLES, type OrderStatus, type Priority } from "@/lib/constants";
+export function Badge({ children, className = "" }: { children: React.ReactNode; className?: string }) { return <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${className}`}>{children}</span>; }
+export function StatusBadge({ status }: { status: OrderStatus }) { return <Badge className={STATUS_STYLES[status] ?? "bg-slate-100 text-slate-700 ring-slate-200"}>{STATUS_SHORT[status] ?? status}</Badge>; }
+export function PriorityBadge({ priority }: { priority: string }) { const value = priority as Priority; return <Badge className={PRIORITY_STYLES[value] ?? "bg-slate-100 text-slate-600 ring-slate-200"}>{PRIORITY_LABELS[value] ?? priority}</Badge>; }
